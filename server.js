@@ -12,38 +12,16 @@ app.use(express.json());
 app.use(express.static('public'));
 
 // ==================== MONGODB ====================
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('Connected to MongoDB Atlas'))
+mongoose.connect(process.env.MONGODB_URI, {
+  serverSelectionTimeoutMS: 30000,   // Wait up to 30 seconds to connect
+  socketTimeoutMS: 60000,            // Allow up to 60 seconds for operations
+  maxPoolSize: 10,
+})
+  .then(() => console.log('✅ Connected to MongoDB Atlas'))
   .catch(err => console.error('MongoDB connection error:', err));
 
-// ==================== SCHEMAS ====================
-const userSchema = new mongoose.Schema({
-  username: { type: String, unique: true, required: true },
-  password: { type: String, required: true },
-  profile: {
-    bio: { type: String, default: '' },
-    avatar: { type: String, default: '' }
-  },
-  status: { type: String, enum: ['pending', 'approved', 'banned', 'declined'], default: 'pending' },
-  isAdmin: { type: Boolean, default: false }
-});
 
-const messageSchema = new mongoose.Schema({
-  sender: String,
-  content: String,
-  timestamp: { type: Date, default: Date.now }
-});
 
-const conversationSchema = new mongoose.Schema({
-  type: { type: String, enum: ['solo', 'group'], required: true },
-  name: { type: String, default: null },
-  creator: { type: String, default: null },           // ← Added for group leader
-  participants: [String],
-  messages: [messageSchema]
-});
-
-const User = mongoose.model('User', userSchema);
-const Conversation = mongoose.model('Conversation', conversationSchema);
 
 // ==================== SEED ADMIN ====================
 async function createAdminIfNotExists() {
