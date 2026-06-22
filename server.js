@@ -11,47 +11,81 @@ const io = new Server(server);
 app.use(express.json());
 app.use(express.static('public'));
 
-// ==================== MONGODB ====================
+// ==================== MONGODB CONNECTION ====================
 mongoose.connect(process.env.MONGODB_URI, {
-  serverSelectionTimeoutMS: 30000,   // Wait up to 30 seconds to connect
-  socketTimeoutMS: 60000,            // Allow up to 60 seconds for operations
+  serverSelectionTimeoutMS: 60000,
+  socketTimeoutMS: 120000,
+  connectTimeoutMS: 60000,
   maxPoolSize: 10,
 })
   .then(() => console.log('✅ Connected to MongoDB Atlas'))
   .catch(err => console.error('MongoDB connection error:', err));
 
+// ==================== SCHEMAS ====================
+const userSchema = new mongoose.Schema({
+  username: { type: String, unique: true, required: true },
+  password: { type: String, required: true },
+  profile: {
+    bio: { type: String, default: '' },
+    avatar: { type: String, default: '' }
+  },
+  status: { type: String, enum: ['pending', 'approved', 'banned', 'declined'], default: 'pending' },
+  isAdmin: { type: Boolean, default: false }
+});
 
+const messageSchema = new mongoose.Schema({
+  sender: String,
+  content: String,
+  timestamp: { type: Date, default: Date.now }
+});
 
+const conversationSchema = new mongoose.Schema({
+  type: { type: String, enum: ['solo', 'group'], required: true },
+  name: { type: String, default: null },
+  creator: { type: String, default: null },
+  participants: [String],
+  messages: [messageSchema]
+});
+
+const User = mongoose.model('User', userSchema);
+const Conversation = mongoose.model('Conversation', conversationSchema);
 
 // ==================== SEED ADMIN ====================
 async function createAdminIfNotExists() {
-  const admin = await User.findOne({ username: 'admin' });
-  if (!admin) {
-    await new User({
-      username: 'admin',
-      password: 'admin123',
-      profile: {
-        bio: 'Administrator',
-        avatar: 'https://ui-avatars.com/api/?name=Admin&background=ef4444&color=fff'
-      },
-      status: 'approved',
-      isAdmin: true
-    }).save();
-    console.log('Admin created (admin / admin123)');
+  try {
+    const admin = await User.findOne({ username: 'admin' });
+    if (!admin) {
+      await new User({
+        username: 'admin',
+        password: 'admin123',
+        profile: {
+          bio: 'Administrator',
+          avatar: 'https://ui-avatars.com/api/?name=Admin&background=ef4444&color=fff'
+        },
+        status: 'approved',
+        isAdmin: true
+      }).save();
+      console.log('✅ Admin account created (admin / admin123)');
+    }
+  } catch (err) {
+    console.error('Error creating admin:', err);
   }
 }
-createAdminIfNotExists();
 
-// ==================== AUTH ROUTES ====================
+mongoose.connection.once('open', () => {
+  createAdminIfNotExists();
+});
+
+// ==================== ROUTES ====================
+
+// Auth
 app.post('/register', async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password)
-      return res.status(400).json({ error: 'Username and password required' });
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
 
     const existing = await User.findOne({ username });
-    if (existing)
-      return res.status(400).json({ error: 'Username already taken' });
+    if (existing) return res.status(400).json({ error: 'Username already taken' });
 
     const user = new User({
       username,
@@ -65,7 +99,6 @@ app.post('/register', async (req, res) => {
     await user.save();
     res.json({ success: true });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -73,23 +106,17 @@ app.post('/register', async (req, res) => {
 app.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password)
-      return res.status(400).json({ error: 'Username and password required' });
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
 
     const user = await User.findOne({ username });
-    if (!user || user.password !== password)
-      return res.status(401).json({ error: 'Invalid credentials' });
+    if (!user || user.password !== password) return res.status(401).json({ error: 'Invalid credentials' });
 
-    if (user.status === 'pending')
-      return res.status(403).json({ error: 'Your account is pending admin approval' });
-    if (user.status === 'banned')
-      return res.status(403).json({ error: 'Your account has been banned' });
-    if (user.status === 'declined')
-      return res.status(403).json({ error: 'Your account was declined' });
+    if (user.status === 'pending') return res.status(403).json({ error: 'Your account is pending admin approval' });
+    if (user.status === 'banned') return res.status(403).json({ error: 'Your account has been banned' });
+    if (user.status === 'declined') return res.status(403).json({ error: 'Your account was declined' });
 
     res.json({ success: true, username: user.username, isAdmin: user.isAdmin });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -107,7 +134,7 @@ app.get('/verify-session/:username', async (req, res) => {
   }
 });
 
-// ==================== PROFILE ROUTES ====================
+// Profile
 app.get('/profile/:username', async (req, res) => {
   try {
     const user = await User.findOne({ username: req.params.username });
@@ -128,7 +155,7 @@ app.post('/profile', async (req, res) => {
   }
 });
 
-// ==================== ADMIN ROUTES ====================
+// Admin Routes
 app.get('/pending-users', async (req, res) => {
   const users = await User.find({ status: 'pending' }).select('username profile');
   res.json(users);
@@ -168,10 +195,8 @@ app.post('/change-admin-password', async (req, res) => {
   try {
     const { newPassword } = req.body;
     if (!newPassword) return res.status(400).json({ error: 'New password required' });
-
     const admin = await User.findOne({ username: 'admin' });
     if (!admin) return res.status(404).json({ error: 'Admin not found' });
-
     admin.password = newPassword;
     await admin.save();
     res.json({ success: true });
@@ -180,7 +205,7 @@ app.post('/change-admin-password', async (req, res) => {
   }
 });
 
-// ==================== CONVERSATION ROUTES ====================
+// Conversations
 app.get('/conversations/:username', async (req, res) => {
   try {
     const convs = await Conversation.find({ participants: req.params.username }).select('-messages');
@@ -204,7 +229,6 @@ app.post('/conversations', async (req, res) => {
       if (existing) return res.json(existing);
     }
 
-    // Save creator when creating a group
     const conv = new Conversation({
       type,
       name: name || null,
@@ -228,20 +252,13 @@ app.get('/messages/:convId', async (req, res) => {
   }
 });
 
-// ==================== GROUP MANAGEMENT ROUTES ====================
+// Group Management Routes
 app.post('/group/add-member', async (req, res) => {
   try {
     const { convId, username, requester } = req.body;
-
     const conv = await Conversation.findById(convId);
-    if (!conv || conv.creator !== requester) {
-      return res.status(403).json({ error: 'Only the group creator can add members' });
-    }
-
-    if (conv.participants.includes(username)) {
-      return res.status(400).json({ error: 'User is already in the group' });
-    }
-
+    if (!conv || conv.creator !== requester) return res.status(403).json({ error: 'Only the group creator can add members' });
+    if (conv.participants.includes(username)) return res.status(400).json({ error: 'User is already in the group' });
     conv.participants.push(username);
     await conv.save();
     res.json({ success: true });
@@ -253,16 +270,9 @@ app.post('/group/add-member', async (req, res) => {
 app.post('/group/remove-member', async (req, res) => {
   try {
     const { convId, username, requester } = req.body;
-
     const conv = await Conversation.findById(convId);
-    if (!conv || conv.creator !== requester) {
-      return res.status(403).json({ error: 'Only the group creator can remove members' });
-    }
-
-    if (username === conv.creator) {
-      return res.status(400).json({ error: 'You cannot remove the group creator' });
-    }
-
+    if (!conv || conv.creator !== requester) return res.status(403).json({ error: 'Only the group creator can remove members' });
+    if (username === conv.creator) return res.status(400).json({ error: 'You cannot remove the group creator' });
     conv.participants = conv.participants.filter(p => p !== username);
     await conv.save();
     res.json({ success: true });
@@ -271,62 +281,11 @@ app.post('/group/remove-member', async (req, res) => {
   }
 });
 
-// ==================== GROUP MANAGEMENT ROUTES ====================
-
-// Add member to group (only creator)
-app.post('/group/add-member', async (req, res) => {
-  try {
-    const { convId, username, requester } = req.body;
-
-    const conv = await Conversation.findById(convId);
-    if (!conv || conv.creator !== requester) {
-      return res.status(403).json({ error: 'Only the group creator can add members' });
-    }
-
-    if (conv.participants.includes(username)) {
-      return res.status(400).json({ error: 'User is already in the group' });
-    }
-
-    conv.participants.push(username);
-    await conv.save();
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Remove member from group (only creator)
-app.post('/group/remove-member', async (req, res) => {
-  try {
-    const { convId, username, requester } = req.body;
-
-    const conv = await Conversation.findById(convId);
-    if (!conv || conv.creator !== requester) {
-      return res.status(403).json({ error: 'Only the group creator can remove members' });
-    }
-
-    if (username === conv.creator) {
-      return res.status(400).json({ error: 'You cannot remove the group creator' });
-    }
-
-    conv.participants = conv.participants.filter(p => p !== username);
-    await conv.save();
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Change group name (only creator)
 app.post('/group/change-name', async (req, res) => {
   try {
     const { convId, newName, requester } = req.body;
-
     const conv = await Conversation.findById(convId);
-    if (!conv || conv.creator !== requester) {
-      return res.status(403).json({ error: 'Only the group creator can change the name' });
-    }
-
+    if (!conv || conv.creator !== requester) return res.status(403).json({ error: 'Only the group creator can change the name' });
     conv.name = newName;
     await conv.save();
     res.json({ success: true });
@@ -335,18 +294,12 @@ app.post('/group/change-name', async (req, res) => {
   }
 });
 
-// Leave group (any member can leave)
 app.post('/group/leave', async (req, res) => {
   try {
     const { convId, username } = req.body;
-
     const conv = await Conversation.findById(convId);
     if (!conv) return res.status(404).json({ error: 'Group not found' });
-
-    if (username === conv.creator) {
-      return res.status(400).json({ error: 'The creator cannot leave. Delete the group instead.' });
-    }
-
+    if (username === conv.creator) return res.status(400).json({ error: 'The creator cannot leave. Delete the group instead.' });
     conv.participants = conv.participants.filter(p => p !== username);
     await conv.save();
     res.json({ success: true });
@@ -355,36 +308,12 @@ app.post('/group/leave', async (req, res) => {
   }
 });
 
-// Delete group (only creator)
 app.post('/group/delete', async (req, res) => {
   try {
     const { convId, requester } = req.body;
-
     const conv = await Conversation.findById(convId);
-    if (!conv || conv.creator !== requester) {
-      return res.status(403).json({ error: 'Only the group creator can delete the group' });
-    }
-
+    if (!conv || conv.creator !== requester) return res.status(403).json({ error: 'Only the group creator can delete the group' });
     await Conversation.findByIdAndDelete(convId);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-// Leave group (any member can leave)
-app.post('/group/leave', async (req, res) => {
-  try {
-    const { convId, username } = req.body;
-
-    const conv = await Conversation.findById(convId);
-    if (!conv) return res.status(404).json({ error: 'Group not found' });
-
-    if (username === conv.creator) {
-      return res.status(400).json({ error: 'The creator cannot leave. Please delete the group instead.' });
-    }
-
-    conv.participants = conv.participants.filter(p => p !== username);
-    await conv.save();
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -424,7 +353,6 @@ io.on('connection', (socket) => {
       const message = { sender: socket.username, content: content.trim(), timestamp: new Date() };
       conv.messages.push(message);
       await conv.save();
-
       io.to(convId).emit('new_message', { ...message, convId });
     } catch (err) {
       console.error('send_message error:', err);
@@ -458,13 +386,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    if (socket.username) {
-      connectedUsers.delete(socket.username);
-    }
+    if (socket.username) connectedUsers.delete(socket.username);
   });
 });
 
-// ==================== START ====================
+// ==================== START SERVER ====================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
